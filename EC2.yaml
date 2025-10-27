@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: A CFT to create an ec2 for devops practise, Installs terraform 
+
+Parameters:
+  VpcId:
+    Description: ID of an existing Virtual Private Cloud (VPC).
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetId:
+    Description: ID of an existing public subnet within the specified VPC.
+    Type: AWS::EC2::Subnet::Id
+
+Resources:
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access via port 22
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-09c813fb71547fc4f
+      InstanceType: t3.medium
+      Tags:
+        - Key: Name
+          Value: Devops
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          SubnetId: !Ref PublicSubnetId
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+      UserData:
+          Fn::Base64: !Sub |
+             #!/bin/bash
+             sudo yum install -y yum-utils
+             sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+             sudo yum -y install terraform
+
+Outputs:
+  InstanceId:
+    Value: !Ref MyInstance

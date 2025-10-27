@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: A CFT to create an EC2 instance for DevOps practice, installs Terraform, and attaches an IAM role with admin access.
+
+Parameters:
+  VpcId:
+    Description: ID of an existing Virtual Private Cloud (VPC).
+    Type: AWS::EC2::VPC::Id
+
+  PublicSubnetId:
+    Description: ID of an existing public subnet within the specified VPC.
+    Type: AWS::EC2::Subnet::Id
+
+Resources:
+
+  # ---------------------------
+  # Security Group
+  # ---------------------------
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH access via port 22
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  # ---------------------------
+  # IAM Role
+  # ---------------------------
+  DevOpsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DevOpsAdminRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Name
+          Value: DevOpsAdminRole
+
+  # ---------------------------
+  # Instance Profile (EC2 uses this to assume the role)
+  # ---------------------------
+  DevOpsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: DevOpsInstanceProfile
+      Roles:
+        - !Ref DevOpsRole
+
+  # ---------------------------
+  # EC2 Instance
+  # ---------------------------
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-09c813fb71547fc4f
+      InstanceType: t3.medium
+      IamInstanceProfile: !Ref DevOpsInstanceProfile
+      Tags:
+        - Key: Name
+          Value: DevOps
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnetId
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum install -y yum-utils
+          yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+          yum -y install terraform
+          terraform -version
+
+Outputs:
+  InstanceId:
+    Description: ID of the created EC2 instance
+    Value: !Ref MyInstance
+  InstancePublicIP:
+    Description: Public IP address of the instance
+    Value: !GetAtt MyInstance.PublicIp
+  IAMRole:
+    Description: IAM Role attached to the EC2 instance
+    Value: !Ref DevOpsRole
