@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: EC2 DevOps instance with Terraform + automatic, NVMe-safe 30GB data volume mounted at /data.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC ID
+
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing Public Subnet ID
+
+Resources:
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH (port 22)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  DevOpsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  DevOpsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref DevOpsRole
+
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-09c813fb71547fc4f
+      InstanceType: t3.medium
+      IamInstanceProfile: !Ref DevOpsInstanceProfile
+      Tags:
+        - Key: Name
+          Value: DevOps
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnetId
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - ""
+            - - "#!/bin/bash\n"
+              - "set -xe\n"
+              - "\n"
+              - "# Install Terraform (RHEL/CentOS/Amazon Linux style)\n"
+              - "yum install -y yum-utils\n"
+              - "yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo\n"
+              - "yum -y install terraform\n"
+              - "\n"
+              - "# -- Determine the real device attached by CloudFormation (device mapping /dev/sdf) --\n"
+              - "# Try metadata mapping first: block-device-mapping/sdf will return the guest device name\n"
+              - "DEVICE_META=$(curl -s --fail http://169.254.169.254/latest/meta-data/block-device-mapping/sdf || true)\n"
+              - "if [ -n \"$DEVICE_META\" ]; then\n"
+              - "  # If metadata returned a name, normalize to an absolute path\n"
+              - "  case \"$DEVICE_META\" in\n"
+              - "    /*) DEVICE=\"$DEVICE_META\" ;;   # already absolute like /dev/nvme2n1 or /dev/xvdf\n"
+              - "    *) DEVICE=\"/dev/${DEVICE_META}\" ;;\n"
+              - "  esac\n"
+              - "else\n"
+              - "  # Fallback: pick first non-root NVMe block device that is not a partition and is not part of root\n"
+              - "  DEVICE=\"\"\n"
+              - "  for dev in $(lsblk -dn -o NAME | grep -E '^nvme[0-9]+n1$' || true); do\n"
+              - "    # skip root device (nvme0n1)\n"
+              - "    if [ \"$dev\" = \"nvme0n1\" ]; then\n"
+              - "      continue\n"
+              - "    fi\n"
+              - "    # check whether device has any partitions (lsblk lists them). If it has no partitions, choose it.\n"
+              - "    parts=$(lsblk -n /dev/$dev -o NAME | wc -l)\n"
+              - "    if [ \"$parts\" -eq 1 ]; then\n"
+              - "      DEVICE=\"/dev/$dev\"\n"
+              - "      break\n"
+              - "    fi\n"
+              - "  done\n"
+              - "  # Final safety: if still empty, pick first non-nvme0n1 disk (works for non-nvme instances)\n"
+              - "  if [ -z \"$DEVICE\" ]; then\n"
+              - "    for d in $(lsblk -dn -o NAME | awk '{print \"/dev/\"$1}'); do\n"
+              - "      if [[ \"$d\" != \"/dev/nvme0n1\" && \"$d\" != \"/dev/xvda\" && \"$d\" != \"/dev/sda1\" ]]; then\n"
+              - "        DEVICE=\"$d\"\n"
+              - "        break\n"
+              - "      fi\n"
+              - "    done\n"
+              - "  fi\n"
+              - "fi\n"
+              - "\n"
+              - "echo \"Resolved device to mount: ${DEVICE}\"\n"
+              - "\n"
+              - "# Safety check: ensure DEVICE exists\n"
+              - "if [ -z \"${DEVICE}\" ] || [ ! -b \"${DEVICE}\" ]; then\n"
+              - "  echo \"ERROR: Could not find the attached volume device. Exiting.\" >&2\n"
+              - "  exit 1\n"
+              - "fi\n"
+              - "\n"
+              - "# Create XFS filesystem if one doesn't exist\n"
+              - "if ! blkid ${DEVICE} >/dev/null 2>&1; then\n"
+              - "  mkfs.xfs -f ${DEVICE}\n"
+              - "fi\n"
+              - "\n"
+              - "# Create mountpoint and mount by UUID for stability\n"
+              - "MOUNT_POINT=/data\n"
+              - "mkdir -p ${MOUNT_POINT}\n"
+              - "UUID=$(blkid -s UUID -o value ${DEVICE})\n"
+              - "if ! grep -q \"$UUID\" /etc/fstab; then\n"
+              - "  cp /etc/fstab /etc/fstab.cfn.backup || true\n"
+              - "  echo \"UUID=${UUID}  ${MOUNT_POINT}  xfs  defaults,nofail  0  0\" >> /etc/fstab\n"
+              - "fi\n"
+              - "mount -a\n"
+              - "\n"
+              - "# Create terraform directory and set permissions\n"
+              - "mkdir -p /data/terraform\n"
+              - "chown -R ec2-user:ec2-user /data/terraform\n"
+              - "chmod 0755 /data/terraform\n"
+              - "\n"
+              - "# Verify\n"
+              - "df -h ${MOUNT_POINT} || true\n"
+              - "terraform -version || true\n"
+              - "\n"
+
+  ExtraDataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      Size: 30
+      VolumeType: gp3
+      AvailabilityZone: !GetAtt MyInstance.AvailabilityZone
+      Tags:
+        - Key: Name
+          Value: DevOpsData
+
+  ExtraVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref MyInstance
+      VolumeId: !Ref ExtraDataVolume
+      Device: /dev/sdf
+
+Outputs:
+  InstanceId:
+    Description: ID of the created EC2 instance
+    Value: !Ref MyInstance
+
+  InstancePublicIP:
+    Description: Public IP address of the instance
+    Value: !GetAtt MyInstance.PublicIp
+
+  DataVolumeId:
+    Description: The EBS volume id of the attached data disk
+    Value: !Ref ExtraDataVolume
