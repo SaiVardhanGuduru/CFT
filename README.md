@@ -42,8 +42,6 @@ The template automatically creates:
 
 /data/terraform
 
-yaml
-Copy code
 
 with correct ownership for `ec2-user`.
 
@@ -72,7 +70,7 @@ with correct ownership for `ec2-user`.
 +---------------------------------------------+
 
 yaml
-Copy code
+
 
 ---
 
@@ -83,7 +81,7 @@ Copy code
 └── README.md # Documentation (this file)
 
 yaml
-Copy code
+
 
 ---
 
@@ -123,23 +121,23 @@ aws cloudformation deploy \
 SSH into the instance:
 
 sh
-Copy code
+
 ssh -i your-key.pem ec2-user@<public-ip>
 Verify mounted volume:
 
 sh
-Copy code
+
 lsblk
 df -h /data
 Expected:
 
 bash
-Copy code
+
 /dev/nvme1n1   30G   mounted on /data
 Terraform workspace:
 
 sh
-Copy code
+
 cd /data/terraform
 terraform -version
 ❗ Understanding the Storage Layout
@@ -160,7 +158,7 @@ Everything is automated.
 Inside the instance:
 
 sh
-Copy code
+
 cd /data/terraform
 
 cat <<EOF > main.tf
@@ -185,7 +183,7 @@ terraform plan
 Run:
 
 sh
-Copy code
+
 sudo mount -a
 sudo tail -50 /var/log/cloud-init-output.log
 2. Device detection failed
